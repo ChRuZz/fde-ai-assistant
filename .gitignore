@@ -12,3 +12,8 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Local SQLite database
+*.db
+*.db-shm
+*.db-wal

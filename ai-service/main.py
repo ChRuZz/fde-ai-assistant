@@ -1,11 +1,19 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from database import get_connection, init_database
+
+
+# 每次服务启动时检查并初始化数据库
+# CREATE TABLE IF NOT EXISTS 不会重复创建表
+# 只有表为空时才会插入初始数据
+init_database()
+
 
 app = FastAPI(
     title="FDE AI Assistant",
     description="智能图书管理系统的 AI 服务",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -23,35 +31,15 @@ class AskResponse(BaseModel):
     question: str
     answer: str
     sources: list[str]
-    # 图书响应模型
+
+
+# 图书响应模型
 class Book(BaseModel):
     id: int
     title: str
     author: str
     available: bool
 
-
-# 临时图书数据，后续会替换为数据库
-BOOKS = [
-    Book(
-        id=1,
-        title="Python 编程：从入门到实践",
-        author="Eric Matthes",
-        available=True,
-    ),
-    Book(
-        id=2,
-        title="深入理解计算机系统",
-        author="Randal E. Bryant",
-        available=False,
-    ),
-    Book(
-        id=3,
-        title="Java 核心技术",
-        author="Cay S. Horstmann",
-        available=True,
-    ),
-]
 
 @app.get("/")
 def root():
@@ -70,10 +58,8 @@ def health():
 
 @app.post("/ask", response_model=AskResponse)
 def ask(request: AskRequest):
-    # 去掉问题首尾的空格
     question = request.question.strip()
 
-    # 拦截只包含空格的问题
     if not question:
         raise HTTPException(
             status_code=400,
@@ -86,7 +72,8 @@ def ask(request: AskRequest):
         sources=[],
     )
 
-# 查询图书列表
+
+# 查询全部图书，或根据关键词搜索
 @app.get("/books", response_model=list[Book])
 def list_books(
     keyword: str | None = Query(
@@ -96,29 +83,70 @@ def list_books(
         description="按书名或作者搜索",
     ),
 ):
-    # 没有关键词时返回全部图书
-    if keyword is None:
-        return BOOKS
+    with get_connection() as connection:
+        if keyword is None:
+            rows = connection.execute(
+                """
+                SELECT id, title, author, available
+                FROM books
+                ORDER BY id
+                """
+            ).fetchall()
+        else:
+            normalized_keyword = keyword.strip()
 
-    normalized_keyword = keyword.strip().lower()
+            if not normalized_keyword:
+                raise HTTPException(
+                    status_code=400,
+                    detail="搜索关键词不能为空",
+                )
 
-    # 搜索书名或作者
+            search_value = f"%{normalized_keyword}%"
+
+            rows = connection.execute(
+                """
+                SELECT id, title, author, available
+                FROM books
+                WHERE title LIKE ?
+                   OR author LIKE ?
+                ORDER BY id
+                """,
+                (search_value, search_value),
+            ).fetchall()
+
     return [
-        book
-        for book in BOOKS
-        if normalized_keyword in book.title.lower()
-        or normalized_keyword in book.author.lower()
+        Book(
+            id=row["id"],
+            title=row["title"],
+            author=row["author"],
+            available=bool(row["available"]),
+        )
+        for row in rows
     ]
 
 
 # 根据 ID 查询单本图书
 @app.get("/books/{book_id}", response_model=Book)
 def get_book(book_id: int):
-    for book in BOOKS:
-        if book.id == book_id:
-            return book
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT id, title, author, available
+            FROM books
+            WHERE id = ?
+            """,
+            (book_id,),
+        ).fetchone()
 
-    raise HTTPException(
-        status_code=404,
-        detail="图书不存在",
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="图书不存在",
+        )
+
+    return Book(
+        id=row["id"],
+        title=row["title"],
+        author=row["author"],
+        available=bool(row["available"]),
     )
