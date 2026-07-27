@@ -14,7 +14,7 @@ init_database()
 app = FastAPI(
     title="FDE AI Assistant",
     description="智能图书管理系统的 AI 服务",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 
@@ -92,37 +92,76 @@ def list_books(
         max_length=50,
         description="按书名或作者搜索",
     ),
+    available: bool | None = Query(
+        default=None,
+        description="按可借状态筛选",
+    ),
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description="单次最多返回的图书数量",
+    ),
+    offset: int = Query(
+        default=0,
+        ge=0,
+        description="跳过的图书数量",
+    ),
 ):
+    sql = """
+        SELECT id, title, author, available
+        FROM books
+    """
+
+    conditions: list[str] = []
+    parameters: list[object] = []
+
+    if keyword is not None:
+        normalized_keyword = keyword.strip()
+
+        if not normalized_keyword:
+            raise HTTPException(
+                status_code=400,
+                detail="搜索关键词不能为空",
+            )
+
+        search_value = f"%{normalized_keyword}%"
+
+        conditions.append(
+            "(title LIKE ? OR author LIKE ?)"
+        )
+        parameters.extend(
+            [
+                search_value,
+                search_value,
+            ]
+        )
+
+    if available is not None:
+        conditions.append("available = ?")
+        parameters.append(int(available))
+
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+
+    sql += """
+        ORDER BY id
+        LIMIT ?
+        OFFSET ?
+    """
+
+    parameters.extend(
+        [
+            limit,
+            offset,
+        ]
+    )
+
     with get_connection() as connection:
-        if keyword is None:
-            rows = connection.execute(
-                """
-                SELECT id, title, author, available
-                FROM books
-                ORDER BY id
-                """
-            ).fetchall()
-        else:
-            normalized_keyword = keyword.strip()
-
-            if not normalized_keyword:
-                raise HTTPException(
-                    status_code=400,
-                    detail="搜索关键词不能为空",
-                )
-
-            search_value = f"%{normalized_keyword}%"
-
-            rows = connection.execute(
-                """
-                SELECT id, title, author, available
-                FROM books
-                WHERE title LIKE ?
-                   OR author LIKE ?
-                ORDER BY id
-                """,
-                (search_value, search_value),
-            ).fetchall()
+        rows = connection.execute(
+            sql,
+            parameters,
+        ).fetchall()
 
     return [row_to_book(row) for row in rows]
 
