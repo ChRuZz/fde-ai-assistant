@@ -1,23 +1,32 @@
-from fastapi import FastAPI, HTTPException, Query
+import sqlite3
+from typing import Annotated
+
+from fastapi import FastAPI, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
 from database import get_connection, init_database
+from schemas import Book, BookAvailabilityUpdate, BookCreate
 
 
-# 每次服务启动时检查并初始化数据库
-# CREATE TABLE IF NOT EXISTS 不会重复创建表
-# 只有表为空时才会插入初始数据
 init_database()
 
 
 app = FastAPI(
     title="FDE AI Assistant",
     description="智能图书管理系统的 AI 服务",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 
-# /ask 接收的请求格式
+PositiveBookId = Annotated[
+    int,
+    Path(
+        gt=0,
+        description="图书 ID，必须是正整数",
+    ),
+]
+
+
 class AskRequest(BaseModel):
     question: str = Field(
         min_length=1,
@@ -26,19 +35,21 @@ class AskRequest(BaseModel):
     )
 
 
-# /ask 返回的响应格式
 class AskResponse(BaseModel):
     question: str
     answer: str
     sources: list[str]
 
 
-# 图书响应模型
-class Book(BaseModel):
-    id: int
-    title: str
-    author: str
-    available: bool
+def row_to_book(row: sqlite3.Row) -> Book:
+    """将 SQLite 查询结果转换为图书响应模型。"""
+
+    return Book(
+        id=row["id"],
+        title=row["title"],
+        author=row["author"],
+        available=bool(row["available"]),
+    )
 
 
 @app.get("/")
@@ -73,7 +84,6 @@ def ask(request: AskRequest):
     )
 
 
-# 查询全部图书，或根据关键词搜索
 @app.get("/books", response_model=list[Book])
 def list_books(
     keyword: str | None = Query(
@@ -114,20 +124,11 @@ def list_books(
                 (search_value, search_value),
             ).fetchall()
 
-    return [
-        Book(
-            id=row["id"],
-            title=row["title"],
-            author=row["author"],
-            available=bool(row["available"]),
-        )
-        for row in rows
-    ]
+    return [row_to_book(row) for row in rows]
 
 
-# 根据 ID 查询单本图书
 @app.get("/books/{book_id}", response_model=Book)
-def get_book(book_id: int):
+def get_book(book_id: PositiveBookId):
     with get_connection() as connection:
         row = connection.execute(
             """
@@ -144,9 +145,99 @@ def get_book(book_id: int):
             detail="图书不存在",
         )
 
-    return Book(
-        id=row["id"],
-        title=row["title"],
-        author=row["author"],
-        available=bool(row["available"]),
-    )
+    return row_to_book(row)
+
+
+@app.post(
+    "/books",
+    response_model=Book,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_book(request: BookCreate):
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO books (
+                    title,
+                    author,
+                    available
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    request.title,
+                    request.author,
+                    int(request.available),
+                ),
+            )
+
+            new_book_id = cursor.lastrowid
+
+            if new_book_id is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="新增图书失败",
+                )
+
+            row = connection.execute(
+                """
+                SELECT id, title, author, available
+                FROM books
+                WHERE id = ?
+                """,
+                (new_book_id,),
+            ).fetchone()
+
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="相同书名和作者的图书已经存在",
+        ) from exc
+
+    if row is None:
+        raise HTTPException(
+            status_code=500,
+            detail="新增图书后无法读取数据",
+        )
+
+    return row_to_book(row)
+
+
+@app.patch(
+    "/books/{book_id}/availability",
+    response_model=Book,
+)
+def update_book_availability(
+    book_id: PositiveBookId,
+    request: BookAvailabilityUpdate,
+):
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE books
+            SET available = ?
+            WHERE id = ?
+            """,
+            (
+                int(request.available),
+                book_id,
+            ),
+        )
+
+        row = connection.execute(
+            """
+            SELECT id, title, author, available
+            FROM books
+            WHERE id = ?
+            """,
+            (book_id,),
+        ).fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="图书不存在",
+        )
+
+    return row_to_book(row)
