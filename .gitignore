@@ -17,3 +17,9 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+
+# Test cache and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
