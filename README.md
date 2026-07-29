@@ -25,3 +25,40 @@
 3. 回答能够显示引用来源。
 4. 图书查询接口能够正常返回结果。
 5. 项目能够通过 Docker 一键启动。
+
+## 使用 Docker 启动 AI 服务
+
+构建并启动服务：
+
+```bash
+docker compose up -d --build
+```
+
+查看容器状态：
+
+```bash
+docker compose ps
+```
+
+测试服务：
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/books
+```
+
+查看日志：
+
+```bash
+docker compose logs -f ai-service
+```
+
+停止并删除容器：
+
+```bash
+docker compose down
+```
+
+SQLite 数据保存在名为 `fde-ai-service-data` 的 Docker Volume 中。普通的
+`docker compose down` 不会删除数据卷；只有明确需要删除全部数据库数据时，
+才使用 `docker compose down -v`。
