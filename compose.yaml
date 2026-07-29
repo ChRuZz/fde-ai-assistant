@@ -1,0 +1,17 @@
+services:
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    image: fde-ai-service:day13
+    ports:
+      - "8000:8000"
+    environment:
+      BOOKS_DATABASE_PATH: /data/books.db
+    volumes:
+      - ai-service-data:/data
+    restart: unless-stopped
+
+volumes:
+  ai-service-data:
+    name: fde-ai-service-data
