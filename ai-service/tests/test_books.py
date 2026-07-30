@@ -1,6 +1,24 @@
 from fastapi.testclient import TestClient
 
 
+def assert_error_response(
+    response,
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+) -> None:
+    assert response.status_code == status_code
+
+    payload = response.json()
+    error = payload["error"]
+
+    assert error["code"] == code
+    assert error["message"] == message
+    assert error["request_id"]
+    assert response.headers["X-Request-ID"] == error["request_id"]
+
+
 def test_list_books_returns_initial_books(
     client: TestClient,
 ) -> None:
@@ -43,13 +61,14 @@ def test_get_existing_book(
 def test_get_missing_book_returns_404(
     client: TestClient,
 ) -> None:
-    """查询不存在的图书时返回 404。"""
     response = client.get("/books/99999")
 
-    assert response.status_code == 404
-    assert response.json() == {
-        "detail": "图书不存在",
-    }
+    assert_error_response(
+        response,
+        status_code=404,
+        code="NOT_FOUND",
+        message="图书不存在",
+    )
 
 
 def test_create_book(
@@ -99,10 +118,12 @@ def test_create_duplicate_book_returns_409(
     )
 
     assert first_response.status_code == 201
-    assert second_response.status_code == 409
-    assert second_response.json() == {
-        "detail": "相同书名和作者的图书已经存在",
-    }
+    assert_error_response(
+        second_response,
+        status_code=409,
+        code="CONFLICT",
+        message="相同书名和作者的图书已经存在",
+    )
 
 
 def test_create_book_rejects_blank_title(
@@ -173,10 +194,12 @@ def test_update_missing_book_returns_404(
         },
     )
 
-    assert response.status_code == 404
-    assert response.json() == {
-        "detail": "图书不存在",
-    }
+    assert_error_response(
+        response,
+        status_code=404,
+        code="NOT_FOUND",
+        message="图书不存在",
+    )
 
 
 def test_filter_books_by_keyword_and_availability(
@@ -305,10 +328,12 @@ def test_blank_keyword_returns_400(
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": "搜索关键词不能为空",
-    }
+    assert_error_response(
+        response,
+        status_code=400,
+        code="BAD_REQUEST",
+        message="搜索关键词不能为空",
+    )
 
 
 def test_sql_injection_input_is_treated_as_data(
@@ -334,3 +359,49 @@ def test_database_is_reset_between_tests(
 
     assert response.status_code == 200
     assert len(response.json()) == 3
+
+
+def test_success_response_contains_request_id(
+    client: TestClient,
+) -> None:
+    """成功响应也应包含请求追踪编号。"""
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"]
+
+
+def test_client_request_id_is_preserved(
+    client: TestClient,
+) -> None:
+    """客户端提供的请求编号应原样返回。"""
+    request_id = "day14-test-request"
+
+    response = client.get(
+        "/health",
+        headers={
+            "X-Request-ID": request_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == request_id
+
+
+def test_validation_error_uses_unified_format(
+    client: TestClient,
+) -> None:
+    """参数校验失败时返回统一错误结构。"""
+    response = client.get(
+        "/books",
+        params={
+            "limit": 0,
+        },
+    )
+
+    assert_error_response(
+        response,
+        status_code=422,
+        code="VALIDATION_ERROR",
+        message="请求参数验证失败",
+    )
