@@ -1,12 +1,23 @@
+import logging
 import sqlite3
+import time
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Path, Query, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, Field
 
 from database import get_connection, init_database
 from schemas import Book, BookAvailabilityUpdate, BookCreate
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+logger = logging.getLogger("fde_ai_service")
 
 init_database()
 
@@ -14,8 +25,136 @@ init_database()
 app = FastAPI(
     title="FDE AI Assistant",
     description="智能图书管理系统的 AI 服务",
-    version="0.5.0",
+    version="0.6.0",
 )
+
+
+@app.middleware("http")
+async def request_logging_middleware(
+    request: Request,
+    call_next,
+):
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    request.state.request_id = request_id
+
+    started_at = time.perf_counter()
+
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+
+        logger.exception(
+            "request_id=%s method=%s path=%s status=500 duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = (time.perf_counter() - started_at) * 1000
+
+    response.headers["X-Request-ID"] = request_id
+
+    logger.info(
+        "request_id=%s method=%s path=%s status=%s duration_ms=%.2f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+
+    return response
+
+
+HTTP_ERROR_CODES = {
+    400: "BAD_REQUEST",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    500: "INTERNAL_SERVER_ERROR",
+}
+
+
+def build_error_response(
+    request: Request,
+    status_code: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    request_id = getattr(
+        request.state,
+        "request_id",
+        str(uuid4()),
+    )
+
+    response_headers = dict(headers or {})
+    response_headers["X-Request-ID"] = request_id
+
+    return JSONResponse(
+        status_code=status_code,
+        headers=response_headers,
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+                "request_id": request_id,
+            }
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException,
+):
+    code = HTTP_ERROR_CODES.get(
+        exc.status_code,
+        f"HTTP_{exc.status_code}",
+    )
+
+    message = (
+        exc.detail
+        if isinstance(exc.detail, str)
+        else "请求处理失败"
+    )
+
+    return build_error_response(
+        request=request,
+        status_code=exc.status_code,
+        code=code,
+        message=message,
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+):
+    return build_error_response(
+        request=request,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        code="VALIDATION_ERROR",
+        message="请求参数验证失败",
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+):
+    return build_error_response(
+        request=request,
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        code="INTERNAL_SERVER_ERROR",
+        message="服务器内部错误",
+    )
 
 
 PositiveBookId = Annotated[
